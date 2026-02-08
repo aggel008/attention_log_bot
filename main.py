@@ -4,8 +4,8 @@ import logging
 import sys
 
 from aiogram import Bot, Dispatcher
-from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.storage.memory import MemoryStorage
 
 from config import load_config
@@ -15,7 +15,7 @@ from services.gpt import GPTService
 
 async def main():
     logging.basicConfig(level=logging.INFO, stream=sys.stdout)
-    
+
     config = load_config()
     
     # Инициализация
