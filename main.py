@@ -11,7 +11,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from config import load_config
 from handlers.admin import admin_router
 from middlewares.album import AlbumMiddleware
-from services.gpt import GPTService
+from services.llm import LLMService
 
 async def main():
     logging.basicConfig(level=logging.INFO, stream=sys.stdout)
@@ -23,11 +23,11 @@ async def main():
     dp = Dispatcher(storage=MemoryStorage())
     
     # Сервисы
-    gpt_service = GPTService(config)
-    
+    llm_service = LLMService(config)
+
     # Прокидываем объекты внутрь хендлеров
     dp['config'] = config
-    dp['gpt'] = gpt_service
+    dp['llm'] = llm_service
     
     # Подключаем Middleware и Роутеры
     dp.message.middleware(AlbumMiddleware())

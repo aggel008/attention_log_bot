@@ -18,7 +18,9 @@ class Config:
     bot_token: str
     admin_id: int
     channels: list[Channel]
-    openai_key: str
+    vertex_project_id: str
+    vertex_location: str
+    vertex_model: str = "gemini-2.5-pro"  # Default model
 
     @property
     def channel_id(self) -> str:
@@ -53,19 +55,29 @@ def load_config() -> Config:
     if not admin_id:
         raise ValueError('ADMIN_ID is not set in environment variables')
 
-    openai_key = os.getenv('OPENAI_API_KEY')
-    if not openai_key:
-        raise ValueError('OPENAI_API_KEY is not set in environment variables')
+    vertex_project_id = os.getenv('VERTEX_PROJECT_ID')
+    if not vertex_project_id:
+        raise ValueError('VERTEX_PROJECT_ID is not set in environment variables')
+
+    vertex_location = os.getenv('VERTEX_LOCATION')
+    if not vertex_location:
+        raise ValueError('VERTEX_LOCATION is not set in environment variables')
+
+    # Model name (with default fallback)
+    vertex_model = os.getenv('VERTEX_MODEL', 'gemini-2.5-pro')
 
     channels = _parse_channels()
     if not channels:
         raise ValueError('No channels configured. Set CHANNELS or CHANNEL_ID.')
 
     _log.debug(f"[CONFIG] Loaded {len(channels)} channel(s)")
+    _log.info(f"[CONFIG] Vertex AI configured: project={vertex_project_id}, location={vertex_location}, model={vertex_model}")
 
     return Config(
         bot_token=bot_token,
         admin_id=int(admin_id),
         channels=channels,
-        openai_key=openai_key
+        vertex_project_id=vertex_project_id,
+        vertex_location=vertex_location,
+        vertex_model=vertex_model
     )

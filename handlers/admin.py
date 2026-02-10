@@ -6,7 +6,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.filters import StateFilter
 
 from config import Config
-from services.gpt import GPTService
+from services.llm import LLMService
 from utils.states import PostState
 
 _log = logging.getLogger(__name__)
@@ -50,7 +50,7 @@ def get_channel_keyboard(config: Config, last_idx: int | None = None) -> InlineK
 
 # Используем config из dependency injection вместо load_config() в фильтре
 @admin_router.message(F.forward_origin)
-async def handle_forward(message: Message, state: FSMContext, bot: Bot, config: Config, gpt: GPTService, album: list[Message] = None):
+async def handle_forward(message: Message, state: FSMContext, bot: Bot, config: Config, llm: LLMService, album: list[Message] = None):
     """Принимаем форвард (одиночный или альбом)"""
 
     # Проверка прав доступа
@@ -88,7 +88,7 @@ async def handle_forward(message: Message, state: FSMContext, bot: Bot, config: 
 
     # 3. Генерируем (передаем entities для сохранения text_link)
     try:
-        generated_text, generated_entities = await gpt.rewrite_text(original_text, entities=entities)
+        generated_text, generated_entities = await llm.rewrite_text(original_text, entities=entities)
         # Очистка (Post-processing)
         generated_text = final_fix(generated_text)
     except Exception as e:
@@ -212,7 +212,7 @@ async def send_preview(message: Message, state: FSMContext, text: str, is_new: b
 # --- КНОПКИ ---
 
 @admin_router.callback_query(F.data == "regen", StateFilter(PostState.viewing_preview))
-async def on_regen(callback: CallbackQuery, state: FSMContext, gpt: GPTService):
+async def on_regen(callback: CallbackQuery, state: FSMContext, llm: LLMService):
     # Убираем кнопки, чтобы показать процесс
     await callback.message.edit_reply_markup(reply_markup=None)
 
@@ -220,7 +220,7 @@ async def on_regen(callback: CallbackQuery, state: FSMContext, gpt: GPTService):
     entities = data.get("original_entities", [])
 
     try:
-        new_text, new_entities = await gpt.rewrite_text(data["original_text"], entities=entities)
+        new_text, new_entities = await llm.rewrite_text(data["original_text"], entities=entities)
         # Очистка (Post-processing)
         new_text = final_fix(new_text)
     except Exception as e:
@@ -282,9 +282,13 @@ async def on_cancel_publish(callback: CallbackQuery, state: FSMContext):
     await callback.answer("Отменено")
 
 async def _do_publish(callback: CallbackQuery, state: FSMContext, bot: Bot, chat_id: str, channel_idx: int = 0):
+    _log.info(f"[ADMIN] _do_publish called: chat_id={chat_id}, channel_idx={channel_idx}")
     data = await state.get_data()
     text = data["generated_text"]
     entities = data.get("generated_entities", [])
+
+    _log.info(f"[ADMIN] Publishing: text_len={len(text)}, entities_count={len(entities)}")
+    _log.info(f"[ADMIN] Media type: is_album={data.get('is_album')}, media_type={data.get('media_type')}")
 
     # Convert entity dicts to MessageEntity objects for Telegram API
     tg_entities = [
@@ -335,6 +339,7 @@ async def _do_publish(callback: CallbackQuery, state: FSMContext, bot: Bot, chat
 
         _user_last_channel[callback.from_user.id] = channel_idx
 
+        _log.info(f"[ADMIN] Successfully published to channel {chat_id}")
         await callback.message.edit_reply_markup(reply_markup=None)
         await callback.message.answer("✅ Опубликовано!")
         await state.clear()

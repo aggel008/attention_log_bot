@@ -1,7 +1,8 @@
 import re
 import logging
 from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
-from openai import AsyncOpenAI
+from google import genai
+from google.genai import types
 from config import Config
 
 _log = logging.getLogger(__name__)
@@ -30,24 +31,40 @@ TRACKING_PARAMS = {
 }
 
 
-class GPTService:
+class LLMService:
     def __init__(self, config: Config):
-        self.client = AsyncOpenAI(api_key=config.openai_key)
-        self.model = "gpt-4o"
+        # Initialize Google GenAI client with Vertex AI
+        self.client = genai.Client(
+            vertexai=True,
+            project=config.vertex_project_id,
+            location=config.vertex_location
+        )
+        # Use model from config (default: gemini-2.5-pro)
+        self.model_name = config.vertex_model
+        _log.info(f"[LLM] Using model: {self.model_name}")
+
+        # Generation config matching previous OpenAI settings
+        self.generation_config = types.GenerateContentConfig(
+            temperature=0.7,
+            max_output_tokens=8192
+        )
 
     async def _make_request(self, system_instruction: str, text: str) -> str:
         if not text:
             return ""
 
-        response = await self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": system_instruction},
-                {"role": "user", "content": text}
-            ],
-            temperature=0.7
+        # Combine system instruction and user text into single prompt
+        # Claude via Vertex AI works better with combined context
+        full_prompt = f"{system_instruction}\n\n---\n\nИсходный текст для переработки:\n\n{text}"
+
+        # Use async generate_content method from google-genai
+        response = await self.client.aio.models.generate_content(
+            model=self.model_name,
+            contents=full_prompt,
+            config=self.generation_config
         )
-        content = response.choices[0].message.content
+
+        content = response.text
         return content.strip() if content else ""
 
     def _extract_all_links(self, text: str, entities: list | None) -> tuple[str, dict[str, dict]]:
@@ -116,7 +133,7 @@ class GPTService:
             if first_token is None:
                 # Remaining tokens are missing
                 for token, data in remaining.items():
-                    _log.error(f"[GPT] LINK TOKEN MISSING: {token} -> {data['url'][:50]}")
+                    _log.error(f"[LLM] LINK TOKEN MISSING: {token} -> {data['url'][:50]}")
                 break
 
             data = remaining.pop(first_token)
@@ -213,7 +230,7 @@ class GPTService:
                         "url": entity["url"]
                     })
                 else:
-                    _log.error(f"[GPT] Entity text not found after normalize: {link_text[:30]}")
+                    _log.error(f"[LLM] Entity text not found after normalize: {link_text[:30]}")
 
         return adjusted
 
@@ -224,7 +241,7 @@ class GPTService:
             tuple: (rewritten_text, caption_entities)
             - caption_entities: list of {"offset", "length", "type", "url"} for text_link
         """
-        _log.debug("[GPT] rewrite_text() called")
+        _log.debug("[LLM] rewrite_text() called")
 
         instruction = (
             "ПЕРЕД ТЕМ КАК ПИСАТЬ — ДУМАЙ.\n\n"
@@ -263,11 +280,14 @@ class GPTService:
             "ТЕРМИНОЛОГИЯ:\n"
             "— НЕ заменяй и НЕ упрощай профессиональный сленг.\n"
             "— 'промпт', 'агент', 'LLM', техжаргон — оставляй.\n\n"
-            "ТОКЕНЫ (КРИТИЧЕСКИ ВАЖНО):\n"
-            "— В тексте есть токены вида ⟦LINK:0⟧, ⟦LINK:1⟧ и т.д.\n"
-            "— Это служебные маркеры. Каждый ОБЯЗАН остаться ровно один раз.\n"
-            "— Нельзя удалять, изменять, дублировать токены.\n"
-            "— Пропавший токен = ошибочный ответ.\n\n"
+            "ТОКЕНЫ ССЫЛОК (КРИТИЧЕСКИ ВАЖНО):\n"
+            "— Если в исходном тексте есть токены вида ⟦LINK:0⟧, ⟦LINK:1⟧ — это маркеры ссылок.\n"
+            "— Каждый токен ОБЯЗАН остаться в выходном тексте ровно один раз в ТОЧНО ТАКОМ ЖЕ виде.\n"
+            "— Нельзя удалять, изменять формат, дублировать токены.\n"
+            "— ЗАПРЕЩЕНО создавать новые токены ⟦LINK:N⟧, если их не было в исходнике.\n"
+            "— ЗАПРЕЩЕНО заменять упоминания моделей, продуктов или версий на токены.\n"
+            "— Пример: 'Claude Opus 4.6' остаётся как есть, НЕ превращается в токен.\n"
+            "— Пропавший или лишний токен = критическая ошибка.\n\n"
             "ГЛУБИНА ПЕРЕРАБОТКИ:\n"
             "— Это НЕ пересказ и НЕ перефраз.\n"
             "— Пиши С НУЛЯ, вдохновляясь исходником.\n"
@@ -289,7 +309,7 @@ class GPTService:
         # LLM never sees URLs, only ⟦LINK:n⟧
         text_safe, links = self._extract_all_links(text, entities)
 
-        _log.debug(f"[GPT] Links extracted: {len(links)}")
+        _log.debug(f"[LLM] Links extracted: {len(links)}")
 
         # Step 2: LLM rewrite (sees only text + tokens, no URLs)
         raw = await self._make_request(instruction, text_safe)
@@ -297,7 +317,7 @@ class GPTService:
         # Step 3: Restore tokens → text + build entities for Telegram
         restored, new_entities = self._restore_all_links(raw, links)
 
-        _log.info(f"[GPT] Links restored: {len(new_entities)} entities built")
+        _log.info(f"[LLM] Links restored: {len(new_entities)} entities built")
 
         # Step 4: Normalize paragraphs for Telegram (no length-based splitting)
         final_text = self._normalize_paragraphs(restored)
