@@ -62,6 +62,7 @@ async def handle_forward(message: Message, state: FSMContext, bot: Bot, config: 
     if album:
         original_text = album[0].caption or ""
         entities = album[0].caption_entities or []
+        _log.info(f"[ADMIN] Album forward: text_len={len(original_text)}, entities={len(entities)}")
         _log.info(f"[ADMIN] Album received: text_len={len(original_text)}, entities_count={len(entities)}")
 
         media_group = []
