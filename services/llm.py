@@ -80,21 +80,47 @@ class LLMService:
         # Step 1: Extract entity links (process from end to avoid offset shifts)
         # Support both Telegram MessageEntity objects and plain dicts
         if entities:
-            def _get(e, key):
-                return e[key] if isinstance(e, dict) else getattr(e, key)
+            def _get(e, key, default=None):
+                if isinstance(e, dict):
+                    return e.get(key, default)
+                return getattr(e, key, default)
 
-            sorted_entities = sorted(
-                [e for e in entities if _get(e, "type") == "text_link" and _get(e, "url")],
-                key=lambda e: _get(e, "offset"),
-                reverse=True
-            )
+            # Log incoming entities for debugging
+            _log.info(f"[LLM] Processing {len(entities)} entities")
+            for e in entities:
+                _log.info(f"[LLM]   Entity: type={_get(e, 'type')}, offset={_get(e, 'offset')}, length={_get(e, 'length')}, url={_get(e, 'url')}")
+
+            # Filter entities: text_link (with url field) OR url type (URL in text)
+            link_entities = []
+            for e in entities:
+                entity_type = _get(e, "type")
+                if entity_type == "text_link" and _get(e, "url"):
+                    link_entities.append(e)
+                elif entity_type == "url":
+                    # For 'url' type, the URL is in the text itself
+                    link_entities.append(e)
+
+            sorted_entities = sorted(link_entities, key=lambda e: _get(e, "offset"), reverse=True)
+
             for entity in sorted_entities:
                 start = _get(entity, "offset")
                 end = start + _get(entity, "length")
-                anchor = text[start:end]  # Save anchor text!
-                url = _get(entity, "url")
-                token = LINK_TOKEN.format(n=counter)
-                links[token] = {"anchor": anchor, "url": url}
+                anchor_or_url = text[start:end]  # This is either anchor text or the URL itself
+                entity_type = _get(entity, "type")
+
+                if entity_type == "text_link":
+                    # text_link: custom anchor with hidden URL
+                    url = _get(entity, "url")
+                    token = LINK_TOKEN.format(n=counter)
+                    links[token] = {"anchor": anchor_or_url, "url": url}
+                    _log.info(f"[LLM]   Extracted text_link: anchor='{anchor_or_url[:30]}', url='{url[:50]}'")
+                elif entity_type == "url":
+                    # url: visible URL in text (no custom anchor)
+                    url = anchor_or_url  # The URL is the text itself
+                    token = LINK_TOKEN.format(n=counter)
+                    links[token] = {"anchor": None, "url": url}
+                    _log.info(f"[LLM]   Extracted url: url='{url[:50]}'")
+
                 counter += 1
                 text = text[:start] + token + text[end:]
 
@@ -116,6 +142,7 @@ class LLMService:
         Returns: (restored_text, entities)
         entities: [{"offset": int, "length": int, "type": "text_link", "url": str}]
         """
+        _log.info(f"[LLM] Restoring {len(links)} link tokens from rewritten text")
         new_entities = []
         remaining = dict(links)
 
@@ -154,6 +181,7 @@ class LLMService:
                 "type": "text_link",
                 "url": clean_url
             })
+            _log.info(f"[LLM]   Restored {first_token}: '{replacement[:30]}' -> {clean_url[:50]}")
 
         return text, new_entities
 
@@ -309,10 +337,17 @@ class LLMService:
         # LLM never sees URLs, only ⟦LINK:n⟧
         text_safe, links = self._extract_all_links(text, entities)
 
-        _log.debug(f"[LLM] Links extracted: {len(links)}")
+        _log.info(f"[LLM] Links extracted: {len(links)}")
+        _log.info(f"[LLM] Text with tokens (preview): {text_safe[:200]}")
 
         # Step 2: LLM rewrite (sees only text + tokens, no URLs)
         raw = await self._make_request(instruction, text_safe)
+
+        _log.info(f"[LLM] LLM response (preview): {raw[:200]}")
+        # Check if tokens are preserved
+        for token in links.keys():
+            if token not in raw:
+                _log.error(f"[LLM] TOKEN LOST BY LLM: {token} -> {links[token]['url'][:50]}")
 
         # Step 3: Restore tokens → text + build entities for Telegram
         restored, new_entities = self._restore_all_links(raw, links)

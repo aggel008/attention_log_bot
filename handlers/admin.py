@@ -62,6 +62,7 @@ async def handle_forward(message: Message, state: FSMContext, bot: Bot, config: 
     if album:
         original_text = album[0].caption or ""
         entities = album[0].caption_entities or []
+        _log.info(f"[ADMIN] Album received: text_len={len(original_text)}, entities_count={len(entities)}")
 
         media_group = []
         for msg in album:
@@ -72,8 +73,12 @@ async def handle_forward(message: Message, state: FSMContext, bot: Bot, config: 
 
         await state.update_data(media_group=media_group, is_album=True)
     else:
+        # Get text and entities (works for both text and caption)
         original_text = message.caption or message.text or ""
         entities = message.caption_entities or message.entities or []
+        _log.info(f"[ADMIN] Message received: text_len={len(original_text)}, entities_count={len(entities)}")
+        for e in (entities or []):
+            _log.info(f"[ADMIN]   Entity: type={e.type}, offset={e.offset}, length={e.length}, url={getattr(e, 'url', None)}")
 
         # Вот этот блок ниже должен стоять ровно под original_text
         if message.photo:
@@ -354,17 +359,18 @@ async def _do_publish(callback: CallbackQuery, state: FSMContext, bot: Bot, chat
 async def on_manual_text(message: Message, state: FSMContext, bot: Bot):
     new_text = message.text or ""
 
-    # Preserve entities from user's message if present
+    # Preserve ALL entities from user's message (not just text_link)
     new_entities = []
     if message.entities:
         for entity in message.entities:
-            if entity.type == "text_link" and entity.url:
-                new_entities.append({
-                    "offset": entity.offset,
-                    "length": entity.length,
-                    "type": "text_link",
-                    "url": entity.url
-                })
+            entity_dict = {
+                "offset": entity.offset,
+                "length": entity.length,
+                "type": entity.type
+            }
+            if entity.url:
+                entity_dict["url"] = entity.url
+            new_entities.append(entity_dict)
 
     await state.update_data(generated_text=new_text, generated_entities=new_entities)
 
